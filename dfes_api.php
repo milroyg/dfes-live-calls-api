@@ -95,10 +95,10 @@ if ($input_timestamp > $one_hour_after) {
 }
 
 // If the timestamp is valid, continue with your logic
-return new WP_REST_Response([
-    'status' => 'success',
-    'message' => 'Incident updated successfully.'
-], 200);
+// return new WP_REST_Response([
+//     'status' => 'success',
+//     'message' => 'Incident updated successfully.'
+// ], 200);
 
 
 
@@ -153,13 +153,13 @@ return new WP_REST_Response([
 
         return new WP_REST_Response([
             'status' => 'success',
-            'message' => 'Data inserted successfully',
-            'data' => $params
+            'message' => 'Data inserted successfully'
+            // 'data' => $params
         ], 201);
     }
 }
 
-// Register a new API route for fetching the last 24-hour incidents
+// // Register a new API route for fetching the last 24-hour incidents
 add_action('rest_api_init', function () {
     register_rest_route('dfes/v1', '/live-calls', array(
         'methods'  => 'GET',

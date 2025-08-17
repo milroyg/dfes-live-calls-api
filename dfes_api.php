@@ -6,15 +6,52 @@ Version: 1.0
 Author: Milroy Gomes
 */
 
-// Register activation hook to create the table
-register_activation_hook(__FILE__, 'dfes_api_create_table');
+// =============================
+// 1️⃣ ACTIVATION HOOKS
+// =============================
+register_activation_hook(__FILE__, 'dfes_api_on_activate');
+register_deactivation_hook(__FILE__, 'dfes_api_on_deactivate');
 
+function dfes_api_on_activate() {
+    dfes_api_create_table();
+
+    // Schedule purge event
+    if (!wp_next_scheduled('dfes_purge_old_records')) {
+        wp_schedule_event(time(), 'hourly', 'dfes_purge_old_records');
+    }
+}
+
+function dfes_api_on_deactivate() {
+    wp_clear_scheduled_hook('dfes_purge_old_records');
+}
+
+// =============================
+// 2️⃣ MAIN HOOK REGISTRATION
+// =============================
+add_action('plugins_loaded', 'dfes_api_register_hooks');
+
+function dfes_api_register_hooks() {
+    // Rewrite rules
+    add_action('init', 'dfes_api_add_rewrite_rules');
+
+    // Custom query vars
+    add_filter('query_vars', 'dfes_api_add_query_vars');
+
+    // Template redirects
+    add_action('template_redirect', 'dfes_api_template_redirect_handler');
+
+    // Cron purge
+    add_action('dfes_purge_old_records', 'dfes_api_purge_old_records');
+}
+
+// =============================
+// 3️⃣ DB TABLE CREATION
+// =============================
 function dfes_api_create_table() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'dfes_incidents';
-
     $charset_collate = $wpdb->get_charset_collate();
-    
+
     $sql = "CREATE TABLE $table_name (
         id BIGINT(20) NOT NULL AUTO_INCREMENT,
         dsr_id VARCHAR(50) NOT NULL,
@@ -37,174 +74,174 @@ function dfes_api_create_table() {
     dbDelta($sql);
 }
 
-// Register the REST API route
-add_action('rest_api_init', function () {
-    register_rest_route('dfes/v1', '/update', array(
-        'methods' => ['GET', 'POST'],
-        'callback' => 'dfes_api_handle_request',
-        'permission_callback' => '__return_true'
-    ));
+// =============================
+// 4️⃣ REWRITE RULES & QUERY VARS
+// =============================
+function dfes_api_add_rewrite_rules() {
+    add_rewrite_rule('^dfes/data/live/update/?$', 'index.php?dfes_update=1', 'top');
+    add_rewrite_rule('^disaster-management/live-calls/data/?$', 'index.php?dfes_live_calls=1', 'top');
+}
 
-});
+function dfes_api_add_query_vars($vars) {
+    $vars[] = 'dfes_update';
+    $vars[] = 'dfes_live_calls';
+    return $vars;
+}
 
-// Handle API request
+// =============================
+// 5️⃣ TEMPLATE REDIRECT HANDLER
+// =============================
+function dfes_api_template_redirect_handler() {
+    if (get_query_var('dfes_update')) {
+        $request = new WP_REST_Request('GET');
+        foreach ($_REQUEST as $key => $value) {
+            $request->set_param($key, $value);
+        }
+        $response = dfes_api_handle_request($request);
+        wp_send_json($response->get_data(), $response->get_status());
+    }
+
+    if (get_query_var('dfes_live_calls')) {
+        $response = dfes_api_fetch_live_calls(new WP_REST_Request('GET'));
+        wp_send_json($response->get_data(), $response->get_status());
+    }
+}
+
+// =============================
+// 6️⃣ API HANDLER - INSERT/UPDATE
+// =============================
 function dfes_api_handle_request(WP_REST_Request $request) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'dfes_incidents';
-
-    // Retrieve parameters from URL
     $params = $request->get_params();
-    
-    $dsr_id = sanitize_text_field($params['dsr_id']);
-    $date = sanitize_text_field($params['date']);
-    $outtime = sanitize_text_field($params['outtime']);
-    $intime = sanitize_text_field($params['intime']);
-    $station = sanitize_text_field($params['station']);
-    $call_type = sanitize_text_field($params['call_type']);
+
+    // Sanitize
+    $dsr_id        = sanitize_text_field($params['dsr_id']);
+    $date          = sanitize_text_field($params['date']);
+    $outtime       = sanitize_text_field($params['outtime']);
+    $intime        = sanitize_text_field($params['intime']);
+    $station       = sanitize_text_field($params['station']);
+    $call_type     = sanitize_text_field($params['call_type']);
     $activity_live = sanitize_text_field($params['activity_live']);
-    $near = sanitize_text_field($params['near']);
-    $at = sanitize_text_field($params['at']);
-    $vehicle = sanitize_text_field($params['vehicle']);
-    $taluka = sanitize_text_field($params['taluka']);
-    $village = sanitize_text_field($params['village']);
-    $activity_sms = sanitize_text_field($params['activity_sms']);
+    $near          = sanitize_text_field($params['near']);
+    $at            = sanitize_text_field($params['at']);
+    $vehicle       = sanitize_text_field($params['vehicle']);
+    $taluka        = sanitize_text_field($params['taluka']);
+    $village       = sanitize_text_field($params['village']);
+    $activity_sms  = sanitize_text_field($params['activity_sms']);
 
-  // 🛠️ Validate Date: Prevent outdated and future timestamps
-date_default_timezone_set('Asia/Kolkata');  // Set to IST timezone
+    // Time validation
+    date_default_timezone_set('Asia/Kolkata');
+    $current_timestamp = time();
+    $input_timestamp   = intval($date);
+    $one_hour_before   = $current_timestamp - 3600;
 
-$current_timestamp = time();               // Current IST timestamp
-$input_timestamp = intval($date);          // Convert input date to integer
+    if ($input_timestamp < $one_hour_before) {
+        return new WP_REST_Response(['status' => 'error', 'message' => 'OUTDATED TIME - Data not stored.'], 400);
+    }
+    if ($input_timestamp > $current_timestamp) {
+        return new WP_REST_Response(['status' => 'error', 'message' => 'FUTURE TIME - Data not stored.'], 400);
+    }
 
-// Allow timestamps only within the current hour range (prevent past and future)
-$one_hour_before = $current_timestamp - 3600;   // 1 hour before current time
-$one_hour_after = $current_timestamp + 3600;    // 1 hour after current time
-
-// Compare timestamps in IST
-if ($input_timestamp < $one_hour_before) {
-    return new WP_REST_Response([
-        'status' => 'error',
-        'message' => 'OUTDATED TIME - Data not stored.'
-    ], 400);
-}
-
-if ($input_timestamp > $one_hour_after) {
-    return new WP_REST_Response([
-        'status' => 'error',
-        'message' => 'FUTURE TIME - Data not stored.'
-    ], 400);
-}
-
-// If the timestamp is valid, continue with your logic
-// return new WP_REST_Response([
-//     'status' => 'success',
-//     'message' => 'Incident updated successfully.'
-// ], 200);
-
-
-
-    // Check if the dsr_id already exists
-    $existing = $wpdb->get_row($wpdb->prepare(
-        "SELECT * FROM $table_name WHERE dsr_id = %s", $dsr_id
-    ));
-
+    // Insert or update
+    $existing = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_name WHERE dsr_id = %s", $dsr_id));
     if ($existing) {
-        // Update the record if dsr_id exists
         $wpdb->update(
             $table_name,
-            [
-                'date' => $date,
-                'outtime' => $outtime,
-                'intime' => $intime,
-                'station' => $station,
-                'call_type' => $call_type,
-                'activity_live' => $activity_live,
-                'near' => $near,
-                'at' => $at,
-                'vehicle' => $vehicle,
-                'taluka' => $taluka,
-                'village' => $village,
-                'activity_sms' => $activity_sms
-            ],
+            compact('date', 'outtime', 'intime', 'station', 'call_type', 'activity_live', 'near', 'at', 'vehicle', 'taluka', 'village', 'activity_sms'),
             ['dsr_id' => $dsr_id]
         );
-
-        return new WP_REST_Response([
-            'status' => 'success',
-            'message' => 'Data updated successfully',
-            'data' => $params
-        ], 200);
+        return new WP_REST_Response(['status' => 'success', 'message' => 'Data updated successfully', 'data' => $params], 200);
     } else {
-        // Insert new record if dsr_id doesn't exist
-        $wpdb->insert($table_name, [
-            'dsr_id' => $dsr_id,
-            'date' => $date,
-            'outtime' => $outtime,
-            'intime' => $intime,
-            'station' => $station,
-            'call_type' => $call_type,
-            'activity_live' => $activity_live,
-            'near' => $near,
-            'at' => $at,
-            'vehicle' => $vehicle,
-            'taluka' => $taluka,
-            'village' => $village,
-            'activity_sms' => $activity_sms
-        ]);
-
-        return new WP_REST_Response([
-            'status' => 'success',
-            'message' => 'Data inserted successfully'
-            // 'data' => $params
-        ], 201);
+        $wpdb->insert($table_name, compact('dsr_id', 'date', 'outtime', 'intime', 'station', 'call_type', 'activity_live', 'near', 'at', 'vehicle', 'taluka', 'village', 'activity_sms'));
+        return new WP_REST_Response(['status' => 'success', 'message' => 'Data inserted successfully'], 201);
     }
 }
 
-// // Register a new API route for fetching the last 24-hour incidents
-add_action('rest_api_init', function () {
-    register_rest_route('dfes/v1', '/live-calls', array(
-        'methods'  => 'GET',
-        'callback' => 'dfes_api_fetch_live_calls',
-        'permission_callback' => '__return_true'
-    ));
-});
+// =============================
+// 7️⃣ API HANDLER - INSERT/UPDATE
+// =============================
+$csv_file = plugin_dir_path(__FILE__) . 'data/numbers.csv';
+if (file_exists($csv_file)) {
+    if (($handle = fopen($csv_file, "r")) !== FALSE) {
+        $first = true;
+        while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
+            if ($first) { $first = false; continue; } // skip header row
+
+            $mobile = trim($data[1]); // second column = mobile
+
+            if (!empty($mobile)) {
+                $message = "Fire Station: $station\nTime: $outtime\nIncident: $activity_live\nNear: $near\nAt: $at\nArea: $village\nDFES,Goa.";
+
+                $url = "https://api.msg91.com/api/sendhttp.php?" .
+                       "authkey=YOUR_AUTHKEY" .
+                       "&sender=YOUR_SENDERID" .
+                       "&mobiles={$mobile}" .
+                       "&route=4" .
+                       "&message=" . urlencode($message) .
+                       "&DLT_TE_ID=YOUR_TEMPLATE_ID";
+
+                wp_remote_get($url);
+            }
+        }
+        fclose($handle);
+    }
+}
+
+
+// =============================
+// 8️⃣ API HANDLER - LAST 24 HOURS
+// =============================
 function dfes_api_fetch_live_calls(WP_REST_Request $request) {
     global $wpdb;
-
     $table_name = $wpdb->prefix . 'dfes_incidents';
 
-    // 🔥 Set timezone to IST for consistency
     date_default_timezone_set('Asia/Kolkata');
-
-    // Get the current timestamp in IST
     $now = time();
-    
-    // Calculate 24 hours ago in IST
-    $past_24_hours = $now - (24 * 60 * 60);  // 24 hours in seconds
+    $past_24_hours = $now - (24 * 60 * 60);
 
-    // Query to fetch incidents from the last 24 hours
     $results = $wpdb->get_results(
-        $wpdb->prepare(
-            "SELECT * FROM $table_name WHERE date >= %d ORDER BY date DESC",
-            $past_24_hours
-        ),
+        $wpdb->prepare("SELECT * FROM $table_name WHERE date >= %d ORDER BY date DESC", $past_24_hours),
         ARRAY_A
     );
 
-    // Check if data is found
     if (empty($results)) {
-        return new WP_REST_Response([
-            'status' => 'success',
-            'message' => 'No incidents found in the last 24 hours.',
-            'data' => []
-        ], 200);
+        return new WP_REST_Response([], 200);
     }
 
-    // Return the incidents as JSON
-    return new WP_REST_Response([
-        'status' => 'success',
-        'message' => 'Incidents from the last 24 hours.',
-        'data' => $results
-    ], 200);
+    // Transform keys
+    $retitled = array_map(function($row) {
+        return [
+            'dsr_id'      => $row['dsr_id'],
+            'date'        => $row['date'],
+            'outtime'     => $row['outtime'],
+            'intime'      => $row['intime'],
+            'station'     => $row['station'],
+            'type'        => $row['call_type'],
+            'description' => $row['activity_live'],
+            'near'        => $row['near'],
+            'at'          => $row['at'],
+            'vehicle'     => $row['vehicle'],
+            'taluka'      => $row['taluka'],
+            'village'     => $row['village'],
+            'activity_sms'=> $row['activity_sms']
+        ];
+    }, $results);
+
+    return new WP_REST_Response($retitled, 200);
 }
 
+// =============================
+// 9️⃣ CRON - PURGE OLD RECORDS
+// =============================
+function dfes_api_purge_old_records() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'dfes_incidents';
 
+    date_default_timezone_set('Asia/Kolkata');
+    $cutoff = time() - (24 * 60 * 60);
+
+    $wpdb->query(
+        $wpdb->prepare("DELETE FROM $table_name WHERE date < %d", $cutoff)
+    );
+}

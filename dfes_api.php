@@ -183,7 +183,7 @@ function dfes_send_esms($station, $outtime, $activity_live, $near, $at, $village
     // Check if file exists
     if (!file_exists($csv_file)) return;
 
-    if (($handle = fopen($csv_file, "r")) !== FALSE) {
+    if (($handle = fopen($csv_file, "r")) !== FALSE) { 
         $first = true;
         while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
             if ($first) { $first = false; continue; } // skip header row

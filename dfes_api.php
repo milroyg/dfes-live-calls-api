@@ -145,31 +145,50 @@ function dfes_api_handle_request(WP_REST_Request $request) {
 
     // Insert or update
     $existing = $wpdb->get_row($wpdb->prepare("SELECT * FROM $table_name WHERE dsr_id = %s", $dsr_id));
+
     if ($existing) {
         $wpdb->update(
             $table_name,
             compact('date', 'outtime', 'intime', 'station', 'call_type', 'activity_live', 'near', 'at', 'vehicle', 'taluka', 'village', 'activity_sms'),
             ['dsr_id' => $dsr_id]
         );
+
+        // ✅ Send SMS only on update
+        dfes_send_esms($station, $outtime, $activity_live, $near, $at, $village);
+
         return new WP_REST_Response(['status' => 'success', 'message' => 'Data updated successfully', 'data' => $params], 200);
+
     } else {
-        $wpdb->insert($table_name, compact('dsr_id', 'date', 'outtime', 'intime', 'station', 'call_type', 'activity_live', 'near', 'at', 'vehicle', 'taluka', 'village', 'activity_sms'));
+        $wpdb->insert(
+            $table_name,
+            compact('dsr_id', 'date', 'outtime', 'intime', 'station', 'call_type', 'activity_live', 'near', 'at', 'vehicle', 'taluka', 'village', 'activity_sms')
+        );
+
+        // ✅ Send SMS only on insert
+        dfes_send_esms($station, $outtime, $activity_live, $near, $at, $village);
+
         return new WP_REST_Response(['status' => 'success', 'message' => 'Data inserted successfully'], 201);
     }
 }
 
+
 // =============================
-// 7️⃣ API HANDLER - INSERT/UPDATE
+// 7️⃣ HELPER - ESMS Sender
 // =============================
-$csv_file = plugin_dir_path(__FILE__) . 'data/numbers.csv';
-if (file_exists($csv_file)) {
+function dfes_send_esms($station, $outtime, $activity_live, $near, $at, $village) {
+     // Get WP uploads folder path
+    $upload_dir = wp_upload_dir();
+    $csv_file   = trailingslashit($upload_dir['basedir']) . 'numbers.csv';
+
+    // Check if file exists
+    if (!file_exists($csv_file)) return;
+
     if (($handle = fopen($csv_file, "r")) !== FALSE) {
         $first = true;
         while (($data = fgetcsv($handle, 1000, ",")) !== FALSE) {
             if ($first) { $first = false; continue; } // skip header row
 
             $mobile = trim($data[1]); // second column = mobile
-
             if (!empty($mobile)) {
                 $message = "Fire Station: $station\nTime: $outtime\nIncident: $activity_live\nNear: $near\nAt: $at\nArea: $village\nDFES,Goa.";
 
@@ -187,7 +206,6 @@ if (file_exists($csv_file)) {
         fclose($handle);
     }
 }
-
 
 // =============================
 // 8️⃣ API HANDLER - LAST 24 HOURS
